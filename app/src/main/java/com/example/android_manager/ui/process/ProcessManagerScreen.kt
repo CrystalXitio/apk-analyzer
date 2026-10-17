@@ -47,17 +47,39 @@ import com.example.android_manager.ui.theme.SecondaryText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import com.example.android_manager.ui.components.APVMEmptyState
+import com.example.android_manager.ui.components.verticalScrollbar
+import com.example.android_manager.ui.theme.CyberCyan
+import com.example.android_manager.ui.theme.Surface
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import androidx.core.net.toUri
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProcessManagerScreen(
     onBack: () -> Unit
 ) {
 
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     val repository = remember {
         ProcessRepository(context)
     }
@@ -80,12 +102,46 @@ fun ProcessManagerScreen(
         mutableStateOf(true)
     }
 
+    var isRefreshing by remember {
+        mutableStateOf(false)
+    }
+
     var backgroundProcesses by remember {
         mutableStateOf<List<ProcessInfo>>(emptyList())
     }
 
     var recentlyActiveApps by remember {
         mutableStateOf<List<ProcessInfo>>(emptyList())
+    }
+
+    val listState = rememberLazyListState()
+    val showScrollToTop by remember {
+        derivedStateOf { listState.firstVisibleItemIndex > 3 }
+    }
+
+    suspend fun refreshProcesses() {
+        isRefreshing = true
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        try {
+            if (repository.hasUsageAccess()) {
+                val overview = withContext(Dispatchers.IO) {
+                    Triple(
+                        repository.getCurrentForegroundApp(),
+                        repository.getBackgroundProcesses(),
+                        repository.getRecentlyActiveApps()
+                    )
+                }
+                currentProcess = overview.first
+                backgroundProcesses = overview.second
+                recentlyActiveApps = overview.third
+            }
+            val exits = withContext(Dispatchers.IO) {
+                repository.getProcessExitHistory()
+            }
+            exitHistory = exits
+        } finally {
+            isRefreshing = false
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -165,13 +221,34 @@ fun ProcessManagerScreen(
             onBack = onBack
         )
 
-        LazyColumn(
+        val totalItems = (6 + backgroundProcesses.size + recentlyActiveApps.size + exitHistory.size).coerceAtLeast(1)
+        val visibleFraction = (listState.layoutInfo.visibleItemsInfo.size.toFloat() / totalItems).coerceIn(0.1f, 1f)
+        val scrollProgress = if (totalItems > 1) {
+            listState.firstVisibleItemIndex.toFloat() / (totalItems - 1)
+        } else 0f
+
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = {
+                scope.launch { refreshProcesses() }
+            },
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 20.dp),
-            verticalArrangement =
-                Arrangement.spacedBy(14.dp)
+                .weight(1f)
+                .fillMaxWidth()
         ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp)
+                        .verticalScrollbar(
+                            scrollProgress = scrollProgress,
+                            viewportRatio = visibleFraction
+                        ),
+                    verticalArrangement =
+                        Arrangement.spacedBy(14.dp)
+                ) {
 
             item {
 
@@ -445,26 +522,19 @@ fun ProcessManagerScreen(
             }
 
             if (exitHistory.isEmpty()) {
-
                 item {
-
-                    Text(
-                        text =
-                            "No process exit events reported by Android.",
-                        color = SecondaryText,
-                        fontSize = 12.sp
+                    APVMEmptyState(
+                        title = "No Process Exit Events",
+                        description = "Android has not recorded unexpected process terminations or crashes recently."
                     )
                 }
-
             } else {
-
                 items(
                     exitHistory,
                     key = {
                         "${it.packageName}_${it.timestamp}"
                     }
                 ) { event ->
-
                     ProcessEventCard(
                         event = event
                     )
@@ -477,6 +547,33 @@ fun ProcessManagerScreen(
                 )
             }
         }
+
+        if (showScrollToTop) {
+            FloatingActionButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    scope.launch { listState.animateScrollToItem(0) }
+                },
+                containerColor = Surface,
+                contentColor = CyberCyan,
+                shape = CircleShape,
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(20.dp)
+                    .size(44.dp)
+                    .border(1.dp, Border, CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowUp,
+                    contentDescription = "Scroll to top",
+                    tint = CyberCyan,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+}
     }
 }
 
